@@ -105,12 +105,4 @@ def build_plan(user_text):
         plan.append({
             "name": item["name"],
             "account": item["account"],
-            "amount_usd": item["amount_usd"],
-            "amount_kes": amount_kes,
-            "rail": rail,
-            "fee_kes": fee,
-            "net_kes": round(amount_kes - fee, 2),
-            "reason": reason,
-            "receipt_narrative": item["receipt_narrative"],
-        })
-    return plan
+            

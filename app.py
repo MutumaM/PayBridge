@@ -1,5 +1,7 @@
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
+from ai_planner import USD_TO_KES, choose_rail
+from rails import RAIL_FEES_KES
 
 load_dotenv()  # loads the keys from .env (must run before PayPal calls)
 
@@ -73,6 +75,66 @@ def plan():
         return jsonify({"plan": build_plan(text)})
     except Exception as error:
         return jsonify({"error": f"Planning failed: {error}"}), 502
+
+
+# Safety limit: no single payment above this (USD) in the demo
+MAX_USD_PER_PAYMENT = 5000
+
+
+@app.route("/api/execute", methods=["POST"])
+def execute():
+    """Run a confirmed plan. Expects JSON: {"plan": [ {name, account,
+    amount_usd, rail, receipt_narrative}, ... ]}"""
+    data = request.get_json() or {}
+    items = data.get("plan", [])
+    if not items:
+        return jsonify({"error": "The plan is empty."}), 400
+
+    # STEP 1: validate everything BEFORE any money moves
+    problems = []
+    for item in items:
+        name = str(item.get("name", "")).strip()
+        if not name:
+            problems.append("A payment has no name.")
+            continue
+        if not str(item.get("account", "")).strip():
+            problems.append(f"{name}: no phone or bank account given.")
+        try:
+            amount = float(item.get("amount_usd", 0))
+        except (TypeError, ValueError):
+            amount = 0
+        if amount <= 0 or amount > MAX_USD_PER_PAYMENT:
+            problems.append(f"{name}: amount must be between 0 and ${MAX_USD_PER_PAYMENT}.")
+        if item.get("rail") not in RAIL_FEES_KES:
+            problems.append(f"{name}: rail must be 'mpesa' or 'bank'.")
+    if problems:
+        return jsonify({"error": "Plan not run.", "problems": problems}), 400
+
+    # STEP 2: run each payment. We recompute the KES amount on the server
+    # so we never trust numbers sent by the browser.
+    receipts = []
+    for item in items:
+        amount_usd = float(item["amount_usd"])
+        amount_kes = round(amount_usd * USD_TO_KES, 2)
+        rail, reason = choose_rail(amount_kes, item["rail"])
+        try:
+            batch_id = send_paypal_payout(amount_usd, f"PayBridge: {item['name']}")
+            payout = rail_engine.send_payout(
+                rail=rail,
+                amount_kes=amount_kes,
+                name=item["name"],
+                account=str(item["account"]).strip(),
+            )
+            payout["paypal_batch_id"] = batch_id
+            payout["amount_usd"] = amount_usd
+            payout["receipt_narrative"] = item.get("receipt_narrative", "")
+            payout["rail_reason"] = reason
+            receipts.append(payout)
+        except Exception as error:
+            # One failure shouldn't hide the others
+            receipts.append({"name": item["name"], "error": str(error)})
+
+    return jsonify({"receipts": receipts}), 201
 
 if __name__ == "__main__":
     app.run(port=5000, debug=True)
