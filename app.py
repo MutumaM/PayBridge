@@ -5,6 +5,7 @@ load_dotenv()  # loads the keys from .env (must run before PayPal calls)
 
 from paypal_client import send_paypal_payout
 from rails import MockRail
+from ai_planner import build_plan
 
 app = Flask(__name__)
 rail_engine = MockRail()  # later: swap for a real provider
@@ -60,6 +61,18 @@ def get_payout(payout_id):
 def list_payouts():
     return jsonify(rail_engine.list_payouts())
 
+
+@app.route("/api/plan", methods=["POST"])
+def plan():
+    """Preview only: reads a request and shows the plan. No money moves."""
+    data = request.get_json() or {}
+    text = data.get("text", "").strip()
+    if not text:
+        return jsonify({"error": "Please type a payment request."}), 400
+    try:
+        return jsonify({"plan": build_plan(text)})
+    except Exception as error:
+        return jsonify({"error": f"Planning failed: {error}"}), 502
 
 if __name__ == "__main__":
     app.run(port=5000, debug=True)
