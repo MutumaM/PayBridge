@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 from ai_planner import USD_TO_KES, choose_rail
 from rails import RAIL_FEES_KES
+from db import init_db, save_recipient, list_recipients
 
 load_dotenv()  # loads the keys from .env (must run before PayPal calls)
 
@@ -10,6 +11,7 @@ from rails import MockRail
 from ai_planner import build_plan
 
 app = Flask(__name__)
+init_db()
 rail_engine = MockRail()  # later: swap for a real provider
 
 # PLACEHOLDER exchange rate for the demo only.
@@ -39,6 +41,8 @@ def transfer():
             amount_kes=amount_kes,
             name=data.get("name", ""),
             account=data.get("account", ""),
+            amount_usd=amount_usd,
+            paypal_batch_id=batch_id,
         )
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
@@ -124,17 +128,36 @@ def execute():
                 amount_kes=amount_kes,
                 name=item["name"],
                 account=str(item["account"]).strip(),
+                amount_usd=amount_usd,
+                paypal_batch_id=batch_id,
+                receipt_narrative=item.get("receipt_narrative", ""),
+                rail_reason=reason,
             )
-            payout["paypal_batch_id"] = batch_id
-            payout["amount_usd"] = amount_usd
-            payout["receipt_narrative"] = item.get("receipt_narrative", "")
-            payout["rail_reason"] = reason
             receipts.append(payout)
         except Exception as error:
             # One failure shouldn't hide the others
             receipts.append({"name": item["name"], "error": str(error)})
 
     return jsonify({"receipts": receipts}), 201
+
+@app.route("/api/recipients", methods=["GET"])
+def recipients_list():
+    return jsonify(list_recipients())
+
+
+@app.route("/api/recipients", methods=["POST"])
+def recipients_add():
+    """Save a worker. Expects JSON: name, rail ('mpesa' or 'bank'), account."""
+    data = request.get_json() or {}
+    name = str(data.get("name", "")).strip()
+    account = str(data.get("account", "")).strip()
+    rail = data.get("rail")
+    if not name or not account:
+        return jsonify({"error": "name and account are required"}), 400
+    if rail not in ("mpesa", "bank"):
+        return jsonify({"error": "rail must be 'mpesa' or 'bank'"}), 400
+    save_recipient(name, rail, account)
+    return jsonify({"saved": name}), 201
 
 if __name__ == "__main__":
     app.run(port=5000, debug=True)

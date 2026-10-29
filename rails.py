@@ -1,11 +1,12 @@
 import time
 import uuid
 
-# NOTE: these fees are PLACEHOLDERS for the demo.
-# Later we will replace them with real published fee tables.
+from db import save_payout, get_payout, list_payouts
+
+# PLACEHOLDER fees (flat, in KES). Replace with real published fees later.
 RAIL_FEES_KES = {
-    "mpesa": 30,   # flat fee in KES (placeholder)
-    "bank": 50,    # flat fee in KES (placeholder)
+    "mpesa": 30,
+    "bank": 50,
 }
 
 # How many seconds a simulated payout takes to "arrive"
@@ -14,57 +15,45 @@ DELIVERY_SECONDS = {
     "bank": 10,
 }
 
-# We keep payouts in memory (a dictionary) to keep things simple.
-# They disappear when the server restarts, which is fine for now.
-PAYOUTS = {}
-
 
 class MockRail:
-    """A fake payment rail that behaves like a real one.
+    """A fake payment rail. A real provider would offer the same methods."""
 
-    Every method here is what a real provider (IntaSend, etc.)
-    would also offer, so we can swap it in later without
-    changing the rest of the app.
-    """
-
-    def send_payout(self, rail, amount_kes, name, account):
-        # Reject rails we don't know about
+    def send_payout(self, rail, amount_kes, name, account, **extra):
+        """Create a simulated payout and save it to the database.
+        extra can hold: amount_usd, paypal_batch_id, receipt_narrative, rail_reason"""
         if rail not in RAIL_FEES_KES:
             raise ValueError("Unknown rail. Use 'mpesa' or 'bank'.")
         if amount_kes <= 0:
             raise ValueError("Amount must be greater than zero.")
 
-        payout_id = "MOCK-" + uuid.uuid4().hex[:8].upper()
-        PAYOUTS[payout_id] = {
-            "id": payout_id,
+        record = {
+            "id": "MOCK-" + uuid.uuid4().hex[:8].upper(),
             "rail": rail,
             "name": name,
             "account": account,
             "amount_kes": amount_kes,
             "fee_kes": RAIL_FEES_KES[rail],
             "created_at": time.time(),
-            "simulated": True,  # always labelled as simulated
         }
-        return self.get_status(payout_id)
+        record.update(extra)  # add the optional extras
+        save_payout(record)
+        return self._with_status(get_payout(record["id"]))
 
-    def get_status(self, payout_id):
-        payout = PAYOUTS.get(payout_id)
-        if payout is None:
-            return None
-
-        # Status depends on how much time has passed since creation
+    def _with_status(self, payout):
+        """Work out the status from how much time has passed."""
         elapsed = time.time() - payout["created_at"]
         if elapsed < 1:
-            status = "initiated"
+            payout["status"] = "initiated"
         elif elapsed < DELIVERY_SECONDS[payout["rail"]]:
-            status = "processing"
+            payout["status"] = "processing"
         else:
-            status = "delivered"
+            payout["status"] = "delivered"
+        return payout
 
-        # Return a copy that includes the current status
-        result = dict(payout)
-        result["status"] = status
-        return result
+    def get_status(self, payout_id):
+        payout = get_payout(payout_id)
+        return self._with_status(payout) if payout else None
 
     def list_payouts(self):
-        return [self.get_status(pid) for pid in PAYOUTS]
+        return [self._with_status(p) for p in list_payouts()]
