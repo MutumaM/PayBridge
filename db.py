@@ -109,3 +109,24 @@ def list_recipients():
     rows = conn.execute("SELECT * FROM recipients ORDER BY name").fetchall()
     conn.close()
     return [_row_to_dict(r) for r in rows]
+
+def get_recipient(name):
+    """Find a saved recipient by name (not case-sensitive).
+    Tries an exact match first, then a single unique 'starts with' match
+    (so "Wanjiru" can find "Wanjiru Kamau"). Returns None if not found."""
+    name = name.strip()
+    if not name:
+        return None
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM recipients WHERE name = ? COLLATE NOCASE", (name,)
+    ).fetchone()
+    if row is None:
+        rows = conn.execute(
+            "SELECT * FROM recipients WHERE name LIKE ? COLLATE NOCASE",
+            (name + "%",),
+        ).fetchall()
+        # Only accept it if exactly one person matches, to avoid mix-ups
+        row = rows[0] if len(rows) == 1 else None
+    conn.close()
+    return _row_to_dict(row)
