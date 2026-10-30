@@ -1,3 +1,4 @@
+from ai_planner import MPESA_MAX_KES
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 from ai_planner import USD_TO_KES, choose_rail
@@ -80,7 +81,10 @@ def plan():
     if not text:
         return jsonify({"error": "Please type a payment request."}), 400
     try:
-        return jsonify({"plan": build_plan(text)})
+        return jsonify({
+            "plan": build_plan(text),
+            "limits": {"mpesa_max_kes": MPESA_MAX_KES, "fees_kes": RAIL_FEES_KES},
+        })
     except Exception as error:
         return jsonify({"error": f"Planning failed: {error}"}), 502
 
@@ -127,6 +131,8 @@ def execute():
             total_usd += amount
         if item.get("rail") not in RAIL_FEES_KES:
             problems.append(f"{name}: rail must be 'mpesa' or 'bank'.")
+        elif item.get("rail") == "mpesa" and amount * USD_TO_KES > MPESA_MAX_KES:
+            problems.append(f"{name}: amount is above the M-PESA limit, please choose bank.")
     if total_usd > MAX_TOTAL_USD_PER_PLAN:
         problems.append(f"Plan total ${total_usd:,.2f} is above the ${MAX_TOTAL_USD_PER_PLAN:,} limit.")
     if problems:
