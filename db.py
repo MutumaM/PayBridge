@@ -130,3 +130,61 @@ def get_recipient(name):
         row = rows[0] if len(rows) == 1 else None
     conn.close()
     return _row_to_dict(row)
+
+# ---------- executed plans (stops the same plan running twice) ----------
+
+def init_plan_table():
+    """Create the table that remembers which plan IDs have been run."""
+    conn = get_connection()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS executed_plans (
+            plan_id TEXT PRIMARY KEY,
+            created_at REAL NOT NULL,
+            receipts_json TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def claim_plan(plan_id):
+    """Try to claim a plan ID. Returns True if it is new, False if
+    it was already used. The PRIMARY KEY makes this safe even if two
+    clicks arrive at the same moment."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO executed_plans (plan_id, created_at) VALUES (?, ?)",
+            (plan_id, time.time()),
+        )
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    finally:
+        conn.close()
+
+
+def finish_plan(plan_id, receipts):
+    """Store the receipts once the plan has finished running."""
+    import json
+    conn = get_connection()
+    conn.execute(
+        "UPDATE executed_plans SET receipts_json = ? WHERE plan_id = ?",
+        (json.dumps(receipts), plan_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_plan_result(plan_id):
+    """Return the saved receipts for a plan, or None if it is still running."""
+    import json
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT receipts_json FROM executed_plans WHERE plan_id = ?", (plan_id,)
+    ).fetchone()
+    conn.close()
+    if row is None or row["receipts_json"] is None:
+        return None
+    return json.loads(row["receipts_json"])

@@ -3,6 +3,8 @@ from flask import Flask, jsonify, request
 from ai_planner import USD_TO_KES, choose_rail
 from rails import RAIL_FEES_KES
 from db import init_db, save_recipient, list_recipients
+from flask_cors import CORS
+from db import init_plan_table, claim_plan, finish_plan, get_plan_result
 
 load_dotenv()  # loads the keys from .env (must run before PayPal calls)
 
@@ -12,6 +14,8 @@ from ai_planner import build_plan
 
 app = Flask(__name__)
 init_db()
+CORS(app)
+init_plan_table()
 rail_engine = MockRail()  # later: swap for a real provider
 
 # PLACEHOLDER exchange rate for the demo only.
@@ -83,19 +87,29 @@ def plan():
 
 # Safety limit: no single payment above this (USD) in the demo
 MAX_USD_PER_PAYMENT = 5000
+MAX_TOTAL_USD_PER_PLAN = 10000
+MAX_PAYMENTS_PER_PLAN = 10
 
 
 @app.route("/api/execute", methods=["POST"])
 def execute():
-    """Run a confirmed plan. Expects JSON: {"plan": [ {name, account,
-    amount_usd, rail, receipt_narrative}, ... ]}"""
+    """Run a confirmed plan. Expects JSON:
+    {"plan_id": "a-unique-string", "plan": [ {name, account, amount_usd,
+    rail, receipt_narrative}, ... ]}"""
     data = request.get_json() or {}
+    plan_id = str(data.get("plan_id", "")).strip()
     items = data.get("plan", [])
+
+    if len(plan_id) < 8 or len(plan_id) > 64:
+        return jsonify({"error": "plan_id is required (8 to 64 characters)."}), 400
     if not items:
         return jsonify({"error": "The plan is empty."}), 400
+    if len(items) > MAX_PAYMENTS_PER_PLAN:
+        return jsonify({"error": f"At most {MAX_PAYMENTS_PER_PLAN} payments per plan."}), 400
 
     # STEP 1: validate everything BEFORE any money moves
     problems = []
+    total_usd = 0.0
     for item in items:
         name = str(item.get("name", "")).strip()
         if not name:
@@ -109,12 +123,24 @@ def execute():
             amount = 0
         if amount <= 0 or amount > MAX_USD_PER_PAYMENT:
             problems.append(f"{name}: amount must be between 0 and ${MAX_USD_PER_PAYMENT}.")
+        else:
+            total_usd += amount
         if item.get("rail") not in RAIL_FEES_KES:
             problems.append(f"{name}: rail must be 'mpesa' or 'bank'.")
+    if total_usd > MAX_TOTAL_USD_PER_PLAN:
+        problems.append(f"Plan total ${total_usd:,.2f} is above the ${MAX_TOTAL_USD_PER_PLAN:,} limit.")
     if problems:
+        # The plan_id is NOT used up, so the user can fix things and retry
         return jsonify({"error": "Plan not run.", "problems": problems}), 400
 
-    # STEP 2: run each payment. We recompute the KES amount on the server
+    # STEP 2: claim the plan ID. If it was used before, do NOT pay again.
+    if not claim_plan(plan_id):
+        saved = get_plan_result(plan_id)
+        if saved is None:
+            return jsonify({"error": "This plan is already running. Please wait."}), 409
+        return jsonify({"receipts": saved, "duplicate": True}), 200
+
+    # STEP 3: run each payment. The KES amount is recomputed on the server
     # so we never trust numbers sent by the browser.
     receipts = []
     for item in items:
@@ -138,6 +164,7 @@ def execute():
             # One failure shouldn't hide the others
             receipts.append({"name": item["name"], "error": str(error)})
 
+    finish_plan(plan_id, receipts)
     return jsonify({"receipts": receipts}), 201
 
 @app.route("/api/recipients", methods=["GET"])
