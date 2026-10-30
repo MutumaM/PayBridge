@@ -43,3 +43,11 @@ button.link { background: none; color: var(--muted); padding: 10px 4px; text-dec
 .status.initiated { color: var(--muted); }
 .status.processing { color: #b7791f; border-color: #b7791f; }
 .status.delivered { color: var(--brand); border-color: var(--brand); }
+
+/* ---- Rail picker (M-PESA / Bank toggle) ---- */
+.rail-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin: 4px 0 8px; }
+.rail-btn { background: var(--bg); color: var(--text); border-radius: 0; padding: 8px 18px; }
+.rail-btn:hover:not(:disabled) { background: var(--line); }
+.rail-btn.active { background: var(--brand); color: #fff; }
+.rail-btn:disabled { opacity: 0.4; }
+.warn { color: #b7791f; font-weight: 600; }

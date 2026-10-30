@@ -12,7 +12,6 @@ async function api(path, options) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    // The backend sends either a list of "problems" or a single "error"
     const detail = data.problems ? data.problems.join(" ") : data.error;
     throw new Error(detail || `Request failed (${res.status})`);
   }
@@ -26,12 +25,16 @@ const fmt = (n) =>
 const EXAMPLE =
   "Pay Wanjiru $40 for logo design and Brian $120 for the website";
 
+const RAIL_LABEL = { mpesa: "M-PESA", bank: "Bank" };
+
 export default function App() {
   // ---- State: the data the screen remembers ----
-  const [text, setText] = useState("");        // what the user typed
-  const [plan, setPlan] = useState([]);        // the AI's plan (preview)
-  const [planId, setPlanId] = useState("");    // unique ID, stops double payments
-  const [receipts, setReceipts] = useState([]); // results after confirming
+  const [text, setText] = useState("");
+  const [plan, setPlan] = useState([]);
+  const [planId, setPlanId] = useState("");
+  // The M-PESA limit and the fees, sent by the backend with every plan
+  const [limits, setLimits] = useState({ mpesa_max_kes: 150000, fees_kes: {} });
+  const [receipts, setReceipts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -45,8 +48,20 @@ export default function App() {
         method: "POST",
         body: JSON.stringify({ text }),
       });
-      setPlan(data.plan);
-      // A fresh ID for every new preview. The backend refuses repeats.
+      setLimits(data.limits);
+      // Give each payment an "accounts" box per rail, so switching rails
+      // doesn't lose what the user typed.
+      setPlan(
+        data.plan.map((p) => ({
+          ...p,
+          accounts: {
+            mpesa: p.rail === "mpesa" ? p.account : "",
+            bank: p.rail === "bank" ? p.account : "",
+          },
+          // Saved details only apply to the rail they were saved for
+          saved_rail: p.from_saved_recipient ? p.rail : null,
+        }))
+      );
       setPlanId(crypto.randomUUID());
     } catch (e) {
       setPlan([]);
@@ -56,14 +71,41 @@ export default function App() {
     }
   }
 
-  // Let the user type a missing account into the preview
-  function updateAccount(index, value) {
-    setPlan(plan.map((p, i) => (i === index ? { ...p, account: value } : p)));
+  // Is this amount too big for M-PESA?
+  const overMpesa = (p) => p.amount_kes > limits.mpesa_max_kes;
+
+  // User clicks M-PESA or Bank on a payment
+  function chooseRail(index, rail) {
+    setPlan(
+      plan.map((p, i) => {
+        if (i !== index) return p;
+        if (rail === "mpesa" && overMpesa(p)) return p; // not allowed
+        const fee = limits.fees_kes[rail] ?? p.fee_kes;
+        return {
+          ...p,
+          rail,
+          fee_kes: fee,
+          net_kes: Math.round((p.amount_kes - fee) * 100) / 100,
+          reason: "You chose this rail.",
+        };
+      })
+    );
   }
 
-  // Confirm is only allowed when every payment has an account
+  // Type an account number for the currently selected rail
+  function updateAccount(index, value) {
+    setPlan(
+      plan.map((p, i) =>
+        i === index
+          ? { ...p, accounts: { ...p.accounts, [p.rail]: value } }
+          : p
+      )
+    );
+  }
+
+  // Confirm is only allowed when every payment has an account for its rail
   const canConfirm =
-    plan.length > 0 && plan.every((p) => p.account.trim() !== "");
+    plan.length > 0 && plan.every((p) => p.accounts[p.rail].trim() !== "");
 
   // ---- Step 2: run the confirmed plan (real PayPal sandbox payouts) ----
   async function handleConfirm() {
@@ -74,10 +116,9 @@ export default function App() {
         method: "POST",
         body: JSON.stringify({
           plan_id: planId,
-          // Send only what the backend needs; it recomputes the money math
           plan: plan.map((p) => ({
             name: p.name,
-            account: p.account,
+            account: p.accounts[p.rail],
             amount_usd: p.amount_usd,
             rail: p.rail,
             receipt_narrative: p.receipt_narrative,
@@ -85,7 +126,7 @@ export default function App() {
         }),
       });
       setReceipts(data.receipts);
-      setPlan([]); // the plan is used up
+      setPlan([]);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -93,7 +134,6 @@ export default function App() {
     }
   }
 
-  // Ask the backend for the latest status of each receipt
   async function refreshStatus() {
     try {
       const updated = await Promise.all(
@@ -127,7 +167,6 @@ export default function App() {
         </p>
       </header>
 
-      {/* ---- The request box ---- */}
       <section className="card">
         <label htmlFor="request">What do you want to pay?</label>
         <textarea
@@ -149,42 +188,62 @@ export default function App() {
 
       {error && <p className="error">{error}</p>}
 
-      {/* ---- The plan preview ---- */}
       {plan.length > 0 && (
         <section className="card">
           <h2>Review the plan</h2>
-          <p className="muted">No money has moved yet.</p>
+          <p className="muted">No money has moved yet. Choose how each person is paid.</p>
 
           {plan.map((p, i) => (
             <div className="payment" key={i}>
               <div className="payment-top">
                 <strong>{p.name}</strong>
-                <span className={`pill ${p.rail}`}>
-                  {p.rail === "mpesa" ? "M-PESA" : "Bank"}
-                </span>
               </div>
+
+              {/* ---- The rail picker ---- */}
+              <div className="rail-toggle" role="group" aria-label={`Payment method for ${p.name}`}>
+                {["mpesa", "bank"].map((rail) => {
+                  const blocked = rail === "mpesa" && overMpesa(p);
+                  return (
+                    <button
+                      key={rail}
+                      type="button"
+                      className={`rail-btn ${p.rail === rail ? "active" : ""}`}
+                      disabled={blocked}
+                      aria-pressed={p.rail === rail}
+                      onClick={() => chooseRail(i, rail)}
+                    >
+                      {RAIL_LABEL[rail]}
+                    </button>
+                  );
+                })}
+              </div>
+              {overMpesa(p) && (
+                <p className="small warn">
+                  Above the M-PESA limit (KSh {fmt(limits.mpesa_max_kes)}), so
+                  this payment goes to the bank.
+                </p>
+              )}
+
               <div className="amounts">
                 <span>${fmt(p.amount_usd)}</span>
                 <span>→ KSh {fmt(p.amount_kes)}</span>
                 <span className="muted">fee KSh {fmt(p.fee_kes)}</span>
-                <span className="muted">
-                  they receive KSh {fmt(p.net_kes)}
-                </span>
+                <span className="muted">they receive KSh {fmt(p.net_kes)}</span>
               </div>
               <p className="muted small">{p.reason}</p>
               <p className="muted small">Receipt: {p.receipt_narrative}</p>
 
               <input
-                className={p.account.trim() === "" ? "needs" : ""}
+                className={p.accounts[p.rail].trim() === "" ? "needs" : ""}
                 placeholder={
                   p.rail === "mpesa"
                     ? "Phone number, e.g. 254712345678"
                     : "Bank account number"
                 }
-                value={p.account}
+                value={p.accounts[p.rail]}
                 onChange={(e) => updateAccount(i, e.target.value)}
               />
-              {p.from_saved_recipient && (
+              {p.saved_rail === p.rail && (
                 <p className="small saved">Using saved recipient details</p>
               )}
             </div>
@@ -202,7 +261,6 @@ export default function App() {
         </section>
       )}
 
-      {/* ---- Receipts after confirming ---- */}
       {receipts.length > 0 && (
         <section className="card">
           <h2>Receipts</h2>
@@ -219,7 +277,7 @@ export default function App() {
                   <div className="amounts">
                     <span>${fmt(r.amount_usd)}</span>
                     <span>→ KSh {fmt(r.amount_kes)}</span>
-                    <span className="muted">via {r.rail}</span>
+                    <span className="muted">via {RAIL_LABEL[r.rail] || r.rail}</span>
                   </div>
                   <p className="muted small">{r.receipt_narrative}</p>
                   <p className="muted small">
